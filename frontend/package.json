@@ -1,0 +1,45 @@
+{
+  "name": "postal-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "build": "npm run build:remotes && npm run build -w @postal/shell",
+    "build:remotes": "npm run build -w @postal/mfe-auth -w @postal/mfe-shipments -w @postal/mfe-post-offices -w @postal/mfe-tracking",
+    "preview:remotes": "concurrently -n auth,ship,po,track \"npm run preview -w @postal/mfe-auth\" \"npm run preview -w @postal/mfe-shipments\" \"npm run preview -w @postal/mfe-post-offices\" \"npm run preview -w @postal/mfe-tracking\"",
+    "dev": "npm run build:remotes && concurrently -k -n remotes,shell \"npm run preview:remotes\" \"npm run dev -w @postal/shell\"",
+    "start": "npm run build && concurrently -k -n remotes,shell \"npm run preview:remotes\" \"npm run preview -w @postal/shell\"",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@originjs/vite-plugin-federation": "1.3.6",
+    "@testing-library/jest-dom": "6.6.3",
+    "@testing-library/react": "16.1.0",
+    "@testing-library/user-event": "14.5.2",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "4.3.4",
+    "concurrently": "9.1.0",
+    "jsdom": "25.0.1",
+    "typescript": "5.6.3",
+    "vite": "5.4.11",
+    "vitest": "2.1.8"
+  },
+  "dependencies": {
+    "@emotion/react": "11.13.5",
+    "@emotion/styled": "11.13.5",
+    "@hookform/resolvers": "3.9.1",
+    "@mui/icons-material": "6.1.10",
+    "@mui/material": "6.1.10",
+    "@tanstack/react-query": "5.62.3",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-hook-form": "7.54.0",
+    "react-router-dom": "6.28.0",
+    "zod": "3.23.8"
+  }
+}

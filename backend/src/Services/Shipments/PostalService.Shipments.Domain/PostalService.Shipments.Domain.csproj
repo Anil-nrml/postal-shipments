@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\BuildingBlocks\PostalService.BuildingBlocks.Domain\PostalService.BuildingBlocks.Domain.csproj" />
+  </ItemGroup>
+</Project>

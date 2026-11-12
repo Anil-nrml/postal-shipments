@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Services\Identity\PostalService.Identity.Infrastructure\PostalService.Identity.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Services\PostOffices\PostalService.PostOffices.Infrastructure\PostalService.PostOffices.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\Services\Shipments\PostalService.Shipments.Infrastructure\PostalService.Shipments.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

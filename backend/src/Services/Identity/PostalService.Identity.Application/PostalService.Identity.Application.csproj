@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="FluentValidation.DependencyInjectionExtensions" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\PostalService.Identity.Domain\PostalService.Identity.Domain.csproj" />
+    <ProjectReference Include="..\..\..\BuildingBlocks\PostalService.BuildingBlocks.Application\PostalService.BuildingBlocks.Application.csproj" />
+  </ItemGroup>
+</Project>

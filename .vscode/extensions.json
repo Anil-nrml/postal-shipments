@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "ms-dotnettools.csdevkit",
+    "dbaeumer.vscode-eslint",
+    "bierner.markdown-mermaid",
+    "vitest.explorer"
+  ]
+}

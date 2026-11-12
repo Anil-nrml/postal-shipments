@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Services\PostOffices\PostalService.PostOffices.Application\PostalService.PostOffices.Application.csproj" />
+  </ItemGroup>
+</Project>
