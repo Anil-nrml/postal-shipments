@@ -43,7 +43,7 @@ builder.Services.AddRateLimiter(o =>
             TokenLimit = 200,
             TokensPerPeriod = 100,
             ReplenishmentPeriod = TimeSpan.FromSeconds(10),
-            QueueLimit = 0,
+            QueueLimit = 0            
         }));
 });
 
