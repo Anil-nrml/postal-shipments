@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Http.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
@@ -130,16 +131,23 @@ public sealed class HttpShipmentDependencyChecker : IShipmentDependencyChecker
 
     public async Task<ShipmentDependencies> GetAsync(ZipCode zip, CancellationToken ct)
     {
+        var stopwatch = Stopwatch.StartNew();
+        _logger.LogInformation("Dependency request started {Dependency} {Operation}", "Shipments", "GetPostOfficeDependencies");
         try
         {
-            return await _http.GetFromJsonAsync<ShipmentDependencies>(
-                       $"internal/postoffices/{Uri.EscapeDataString(zip.Value)}/dependencies", ct)
-                   ?? throw new ServiceUnavailableException("Empty response from the Shipments service.");
+            var result = await _http.GetFromJsonAsync<ShipmentDependencies>(
+                             $"internal/postoffices/{Uri.EscapeDataString(zip.Value)}/dependencies", ct)
+                         ?? throw new ServiceUnavailableException("Empty response from the Shipments service.");
+            _logger.LogInformation(
+                "Dependency request completed {Dependency} {Operation} in {DurationMs}ms",
+                "Shipments", "GetPostOfficeDependencies", stopwatch.Elapsed.TotalMilliseconds);
+            return result;
         }
         catch (Exception ex) when (ex is HttpRequestException or BrokenCircuitException or TimeoutRejectedException
                                        or TaskCanceledException && !ct.IsCancellationRequested)
         {
-            _logger.LogWarning(ex, "Shipments service unavailable while checking dependencies of {Zip}", zip.Value);
+            _logger.LogWarning(ex, "Dependency request failed {Dependency} {Operation} in {DurationMs}ms",
+                "Shipments", "GetPostOfficeDependencies", stopwatch.Elapsed.TotalMilliseconds);
             throw new ServiceUnavailableException(
                 "Shipment dependencies cannot be verified right now, so the post office was not deleted.", ex);
         }

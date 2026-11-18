@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.Builder;
@@ -11,6 +12,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.OpenApi.Models;
+using PostalService.BuildingBlocks.Infrastructure.Messaging;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
@@ -40,7 +42,8 @@ public static class ServiceDefaults
             .ConfigureResource(r => r.AddService(serviceName))
             .WithTracing(t =>
             {
-                t.AddAspNetCoreInstrumentation(o => o.Filter = ctx => !ctx.Request.Path.StartsWithSegments("/health"))
+                t.AddSource(OutboxTelemetry.ActivitySourceName)
+                    .AddAspNetCoreInstrumentation(o => o.Filter = ctx => !ctx.Request.Path.StartsWithSegments("/health"))
                     .AddHttpClientInstrumentation();
                 if (!string.IsNullOrWhiteSpace(otlpEndpoint)) t.AddOtlpExporter();
             })
@@ -54,6 +57,9 @@ public static class ServiceDefaults
         builder.Services.AddProblemDetails(o => o.CustomizeProblemDetails = ctx =>
         {
             ctx.ProblemDetails.Extensions["correlationId"] = ctx.HttpContext.TraceIdentifier;
+            ctx.ProblemDetails.Extensions["traceId"] =
+                ctx.HttpContext.Items[CorrelationIdMiddleware.TraceIdItemName] ??
+                Activity.Current?.TraceId.ToString();
             ctx.ProblemDetails.Instance ??= ctx.HttpContext.Request.Path;
         });
         builder.Services.AddExceptionHandler<GlobalExceptionHandler>();

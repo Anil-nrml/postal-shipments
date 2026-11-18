@@ -165,6 +165,9 @@ cd ../frontend && npm install
 
 No secret is hard-coded in source. Development-only values live in `appsettings.Development.json`; outside Development use `dotnet user-secrets`, environment variables (`Internal__ApiKey`) or Key Vault.
 
+### Distributed logging and tracing
+The shared micro-frontend API client logs request start, completion, retry, and failure events without request bodies or query values. It creates a correlation ID and W3C `traceparent` for each request and sends them as `X-Correlation-ID`, `X-Trace-ID`, and `traceparent`; retries retain the correlation and trace IDs while creating a fresh parent span ID. The gateway and services log request lifecycles and echo the IDs in response headers. Application commands, outbound service calls, and outbox workers emit structured events with the same IDs in scope. Outbox work uses the event ID as its correlation ID and propagates trace context to subscribers. API errors include IDs in ProblemDetails. Set `OTEL_EXPORTER_OTLP_ENDPOINT` on the gateway and services to export traces and metrics to an OTLP collector; JSON logs go to stdout.
+
 ## 20. Running the backend
 ```bash
 cd backend

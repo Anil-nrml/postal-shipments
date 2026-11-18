@@ -1,5 +1,6 @@
 using FluentValidation;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using PostalService.BuildingBlocks.Application;
 using PostalService.Identity.Domain;
 
@@ -113,9 +114,11 @@ public sealed class AuthService
     private readonly IUnitOfWork _unitOfWork;
     private readonly TimeProvider _clock;
     private readonly IValidator<LoginRequest> _loginValidator;
+    private readonly ILogger<AuthService> _logger;
 
     public AuthService(IUserRepository users, IRefreshTokenRepository refreshTokens, IPasswordHasher hasher,
-        ITokenService tokens, IUnitOfWork unitOfWork, TimeProvider clock, IValidator<LoginRequest> loginValidator)
+        ITokenService tokens, IUnitOfWork unitOfWork, TimeProvider clock, IValidator<LoginRequest> loginValidator,
+        ILogger<AuthService> logger)
     {
         _users = users;
         _refreshTokens = refreshTokens;
@@ -124,6 +127,7 @@ public sealed class AuthService
         _unitOfWork = unitOfWork;
         _clock = clock;
         _loginValidator = loginValidator;
+        _logger = logger;
     }
 
     private DateTime UtcNow => _clock.GetUtcNow().UtcDateTime;
@@ -138,17 +142,22 @@ public sealed class AuthService
         if (user is null)
         {
             _hasher.Hash(request.Password); // equalise timing with the "wrong password" path
+            _logger.LogWarning("Authentication attempt failed");
             return null;
         }
 
         if (!user.IsActive || user.IsLockedOut(now))
+        {
+            _logger.LogWarning("Authentication attempt failed");
             return null;
+        }
 
         var check = _hasher.Verify(user.PasswordHash, request.Password);
         if (check == PasswordCheck.Failed)
         {
             user.RegisterFailedLogin(now);
             await _unitOfWork.SaveChangesAsync(ct);
+            _logger.LogWarning("Authentication attempt failed for user {UserId}", user.Id);
             return null;
         }
 
@@ -158,6 +167,7 @@ public sealed class AuthService
         user.RegisterSuccessfulLogin(now);
         var result = Issue(user, familyId: Guid.NewGuid(), now);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Authentication succeeded for user {UserId}", user.Id);
         return result;
     }
 
@@ -187,6 +197,7 @@ public sealed class AuthService
 
         var result = Issue(user, stored.FamilyId, now, previous: stored);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Session refreshed for user {UserId}", user.Id);
         return result;
     }
 
@@ -198,6 +209,7 @@ public sealed class AuthService
         foreach (var token in await _refreshTokens.GetActiveFamilyAsync(stored.FamilyId, ct))
             token.Revoke(UtcNow);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("User signed out {UserId}", stored.UserId);
     }
 
     public async Task<UserDto?> GetUserAsync(Guid id, CancellationToken ct) =>
@@ -226,11 +238,12 @@ public sealed class UserService
     private readonly IValidator<CreateUserRequest> _createValidator;
     private readonly IValidator<UpdateUserRequest> _updateValidator;
     private readonly IValidator<ResetPasswordRequest> _passwordValidator;
+    private readonly ILogger<UserService> _logger;
 
     public UserService(IUserRepository users, IRefreshTokenRepository refreshTokens, IPasswordHasher hasher,
         IUnitOfWork unitOfWork, ICurrentUser currentUser, TimeProvider clock,
         IValidator<CreateUserRequest> createValidator, IValidator<UpdateUserRequest> updateValidator,
-        IValidator<ResetPasswordRequest> passwordValidator)
+        IValidator<ResetPasswordRequest> passwordValidator, ILogger<UserService> logger)
     {
         _users = users;
         _refreshTokens = refreshTokens;
@@ -241,6 +254,7 @@ public sealed class UserService
         _createValidator = createValidator;
         _updateValidator = updateValidator;
         _passwordValidator = passwordValidator;
+        _logger = logger;
     }
 
     public async Task<IReadOnlyList<UserDto>> ListAsync(CancellationToken ct) =>
@@ -256,6 +270,7 @@ public sealed class UserService
             _clock.GetUtcNow().UtcDateTime);
         _users.Add(user);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("User created {UserId}", user.Id);
         return UserMapper.ToDto(user);
     }
 
@@ -270,6 +285,7 @@ public sealed class UserService
         user.Update(request.DisplayName, request.Role, request.IsActive);
         if (privilegesChanged) await RevokeSessionsAsync(user.Id, ct);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("User updated {UserId}", user.Id);
         return UserMapper.ToDto(user);
     }
 
@@ -280,6 +296,7 @@ public sealed class UserService
         user.ChangePasswordHash(_hasher.Hash(request.NewPassword));
         await RevokeSessionsAsync(user.Id, ct);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("User password reset {UserId}", user.Id);
     }
 
     /// <summary>Access tokens are short-lived (15 min); revoking refresh tokens ends the session at next refresh.</summary>

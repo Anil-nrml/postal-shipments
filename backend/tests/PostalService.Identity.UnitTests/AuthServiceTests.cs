@@ -60,7 +60,7 @@ public sealed class AuthServiceTests : IDisposable
     }
 
     private AuthService Sut() => new(_users, _tokens, _hasher, _tokenService, Mock.Of<IUnitOfWork>(), _clock,
-        new LoginRequestValidator());
+        new LoginRequestValidator(), NullLogger<AuthService>.Instance);
 
     [Fact]
     public async Task Valid_login_issues_tokens_with_role_permissions()

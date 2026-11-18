@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using FluentValidation;
+using Microsoft.Extensions.Logging;
 using PostalService.BuildingBlocks.Application;
 using PostalService.BuildingBlocks.Domain;
 using PostalService.Shipments.Domain;
@@ -28,6 +29,7 @@ public sealed class ShipmentService
     private readonly IValidator<ChangeStatusRequest> _statusValidator;
     private readonly IValidator<CorrectStatusRequest> _correctionValidator;
     private readonly IValidator<ShipmentSearchCriteria> _searchValidator;
+    private readonly ILogger<ShipmentService> _logger;
 
     public ShipmentService(
         IShipmentRepository shipments,
@@ -41,7 +43,8 @@ public sealed class ShipmentService
         IValidator<UpdateShipmentRequest> updateValidator,
         IValidator<ChangeStatusRequest> statusValidator,
         IValidator<CorrectStatusRequest> correctionValidator,
-        IValidator<ShipmentSearchCriteria> searchValidator)
+        IValidator<ShipmentSearchCriteria> searchValidator,
+        ILogger<ShipmentService> logger)
     {
         _shipments = shipments;
         _queries = queries;
@@ -55,6 +58,7 @@ public sealed class ShipmentService
         _statusValidator = statusValidator;
         _correctionValidator = correctionValidator;
         _searchValidator = searchValidator;
+        _logger = logger;
     }
 
     private DateTime UtcNow => _clock.GetUtcNow().UtcDateTime;
@@ -74,6 +78,7 @@ public sealed class ShipmentService
                 if (previous.RequestHash != requestHash)
                     throw new ConflictException("idempotency.key-reused",
                         "This Idempotency-Key was already used with a different request body.");
+                _logger.LogInformation("Shipment creation replayed for {ShipmentId}", previous.ShipmentId);
                 return (await GetAsync(previous.ShipmentId, ct), false);
             }
         }
@@ -97,6 +102,7 @@ public sealed class ShipmentService
 
         // The unique indexes on ShipmentNumber and (Key, UserId) are the final guard against races.
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Shipment created {ShipmentId} with status {Status}", shipment.Id, shipment.Status);
         return (await ToDtoAsync(shipment, ct), true);
     }
 
@@ -119,6 +125,7 @@ public sealed class ShipmentService
 
         shipment.UpdateDetails(request.Type, Weight.FromKilograms(request.WeightKg), destination, UtcNow);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Shipment updated {ShipmentId}", shipment.Id);
         return await ToDtoAsync(shipment, ct);
     }
 
@@ -129,6 +136,7 @@ public sealed class ShipmentService
         shipment.MarkDeleted(UtcNow);
         _shipments.Remove(shipment);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Shipment deleted {ShipmentId}", shipment.Id);
     }
 
     public async Task<ShipmentDto> ChangeStatusAsync(Guid id, ChangeStatusRequest request, CancellationToken ct)
@@ -143,6 +151,7 @@ public sealed class ShipmentService
         // Current status + new history row commit together; the Version concurrency token rejects
         // a second clerk who scanned the same parcel at the same moment (409).
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Shipment status changed {ShipmentId} to {Status}", shipment.Id, shipment.Status);
         return await ToDtoAsync(shipment, ct);
     }
 
@@ -157,6 +166,7 @@ public sealed class ShipmentService
         shipment.CorrectStatus(request.Status, ZipCode.Create(request.PostOfficeZip), _user.UserId, _user.UserName,
             request.Reason, UtcNow);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Shipment status corrected {ShipmentId} to {Status}", shipment.Id, shipment.Status);
         return await ToDtoAsync(shipment, ct);
     }
 

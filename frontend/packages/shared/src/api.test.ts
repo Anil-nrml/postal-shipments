@@ -7,6 +7,48 @@ import { hasPermission } from './auth';
 import { Permissions } from './types';
 
 describe('api client', () => {
+  it('sends correlation and W3C trace context on each request', async () => {
+    const { calls } = mockApi({ 'GET /api/x': { body: {} } });
+
+    await api.get('/x');
+
+    const headers = calls[0]!.headers;
+    const correlationId = headers.get('X-Correlation-ID');
+    const traceId = headers.get('X-Trace-ID');
+    const traceparent = headers.get('traceparent');
+    expect(correlationId).toMatch(/^[a-f0-9]{32}$/);
+    expect(traceId).toMatch(/^[a-f0-9]{32}$/);
+    expect(traceparent).toMatch(/^00-([a-f0-9]{32})-[a-f0-9]{16}-01$/);
+    expect(traceparent?.split('-')[1]).toBe(traceId);
+  });
+
+  it('logs frontend request lifecycle with identifiers and without query values', async () => {
+    const requestLog = vi.spyOn(console, 'info').mockImplementation(() => {});
+    mockApi({ 'GET /api/shipments': { body: {} } });
+
+    await api.get('/shipments?search=private-value');
+
+    expect(requestLog).toHaveBeenCalledWith(
+      'API request started',
+      expect.objectContaining({
+        event: 'api.request.started',
+        path: '/shipments',
+        correlationId: expect.any(String),
+        traceId: expect.any(String),
+      }),
+    );
+    expect(requestLog).toHaveBeenCalledWith(
+      'API request completed',
+      expect.objectContaining({
+        event: 'api.request.completed',
+        path: '/shipments',
+        status: 200,
+        durationMs: expect.any(Number),
+      }),
+    );
+    expect(JSON.stringify(requestLog.mock.calls)).not.toContain('private-value');
+  });
+
   it('sends the CSRF cookie as a header on writes but not on reads', async () => {
     document.cookie = 'csrf_token=abc123; path=/';
     const { calls } = mockApi({ 'GET /api/x': { body: {} }, 'POST /api/x': { body: {} } });
@@ -20,29 +62,54 @@ describe('api client', () => {
   });
 
   it('maps ProblemDetails into ApiError with field errors and code', async () => {
-    mockApi({
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { calls } = mockApi({
       'POST /api/shipments': {
         status: 400,
-        body: { title: 'Validation', errors: { weightKg: ['Must be > 0'] }, correlationId: 'c-1' },
+        body: {
+          title: 'Validation',
+          errors: { weightKg: ['Must be > 0'] },
+          correlationId: 'c-1',
+          traceId: 't-1',
+        },
       },
     });
     const error = await api.post('/shipments', {}).catch((e: unknown) => e);
     expect(error).toBeInstanceOf(ApiError);
     expect((error as ApiError).fieldErrors.weightKg).toEqual(['Must be > 0']);
     expect((error as ApiError).correlationId).toBe('c-1');
+    expect((error as ApiError).traceId).toBe('t-1');
+    expect(errorLog).toHaveBeenCalledWith(
+      'API request failed',
+      expect.objectContaining({
+        event: 'api.request.failed',
+        correlationId: calls[0]!.headers.get('X-Correlation-ID'),
+        traceId: calls[0]!.headers.get('X-Trace-ID'),
+        status: 400,
+      }),
+    );
   });
 
   it('refreshes once on 401 and replays the request', async () => {
     let calls = 0;
-    mockApi({
+    const { calls: requests } = mockApi({
       'GET /api/shipments': () => (++calls === 1 ? { status: 401 } : { body: { ok: true } }),
       'POST /api/auth/refresh': { body: {} },
     });
     await expect(api.get('/shipments')).resolves.toEqual({ ok: true });
     expect(calls).toBe(2);
+    expect(requests[0]!.headers.get('X-Correlation-ID')).toBe(requests[2]!.headers.get('X-Correlation-ID'));
+    expect(requests[0]!.headers.get('X-Trace-ID')).toBe(requests[2]!.headers.get('X-Trace-ID'));
+    expect(requests[0]!.headers.get('traceparent')?.split('-')[1]).toBe(
+      requests[2]!.headers.get('traceparent')?.split('-')[1],
+    );
+    expect(requests[0]!.headers.get('traceparent')?.split('-')[2]).not.toBe(
+      requests[2]!.headers.get('traceparent')?.split('-')[2],
+    );
   });
 
   it('emits session-expired when refresh fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     const listener = vi.fn();
     window.addEventListener(SESSION_EXPIRED, listener);
     mockApi({ 'GET /api/shipments': { status: 401 }, 'POST /api/auth/refresh': { status: 401 } });
@@ -53,6 +120,7 @@ describe('api client', () => {
   });
 
   it('turns network failures into a friendly error', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new TypeError('Failed to fetch')));
     const error = await api.get('/x').catch((e: unknown) => e);
     expect(errorMessage(error)).toMatch(/cannot reach the server/i);

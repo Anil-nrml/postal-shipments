@@ -1,4 +1,5 @@
 using FluentValidation;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.DependencyInjection;
 using PostalService.BuildingBlocks.Application;
 using PostalService.BuildingBlocks.Domain;
@@ -107,10 +108,12 @@ public sealed class PostOfficeService
     private readonly IValidator<CreatePostOfficeRequest> _createValidator;
     private readonly IValidator<UpdatePostOfficeRequest> _updateValidator;
     private readonly IValidator<PostOfficeSearchCriteria> _searchValidator;
+    private readonly ILogger<PostOfficeService> _logger;
 
     public PostOfficeService(IPostOfficeRepository offices, IShipmentDependencyChecker dependencies,
         IUnitOfWork unitOfWork, TimeProvider clock, IValidator<CreatePostOfficeRequest> createValidator,
-        IValidator<UpdatePostOfficeRequest> updateValidator, IValidator<PostOfficeSearchCriteria> searchValidator)
+        IValidator<UpdatePostOfficeRequest> updateValidator, IValidator<PostOfficeSearchCriteria> searchValidator,
+        ILogger<PostOfficeService> logger)
     {
         _offices = offices;
         _dependencies = dependencies;
@@ -119,6 +122,7 @@ public sealed class PostOfficeService
         _createValidator = createValidator;
         _updateValidator = updateValidator;
         _searchValidator = searchValidator;
+        _logger = logger;
     }
 
     private DateTime UtcNow => _clock.GetUtcNow().UtcDateTime;
@@ -136,6 +140,7 @@ public sealed class PostOfficeService
             Address.Create(request.Address, request.City, request.State, request.Country), request.ContactNumber, UtcNow);
         _offices.Add(office);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Post office created {PostOfficeId}", office.Id);
         return ToDto(office);
     }
 
@@ -173,6 +178,7 @@ public sealed class PostOfficeService
         office.Update(request.Name, Address.Create(request.Address, request.City, request.State, request.Country),
             request.ContactNumber, UtcNow);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Post office updated {PostOfficeId}", office.Id);
         return ToDto(office);
     }
 
@@ -181,6 +187,7 @@ public sealed class PostOfficeService
         var office = await LoadAsync(id, ct);
         if (active) office.Activate(UtcNow); else office.Deactivate(UtcNow);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Post office active state changed {PostOfficeId} to {IsActive}", office.Id, active);
         return ToDto(office);
     }
 
@@ -218,6 +225,7 @@ public sealed class PostOfficeService
         office.ConfirmDeletion(dependencies.ActiveShipments, UtcNow);
         _offices.Remove(office);
         await _unitOfWork.SaveChangesAsync(ct);
+        _logger.LogInformation("Post office deleted {PostOfficeId}", office.Id);
     }
 
     private async Task CompensateAsync(PostOffice office)

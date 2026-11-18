@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.AspNetCore.Http;
@@ -13,6 +14,8 @@ namespace PostalService.BuildingBlocks.Infrastructure.Web;
 public sealed class CorrelationIdMiddleware
 {
     public const string HeaderName = "X-Correlation-ID";
+    public const string TraceIdHeaderName = "X-Trace-ID";
+    public const string TraceIdItemName = "TraceId";
     private readonly RequestDelegate _next;
     private readonly ILogger<CorrelationIdMiddleware> _logger;
 
@@ -26,22 +29,60 @@ public sealed class CorrelationIdMiddleware
     {
         var incoming = context.Request.Headers[HeaderName].ToString();
         var correlationId = IsSafe(incoming) ? incoming : Guid.NewGuid().ToString("N");
+        var traceId = Activity.Current?.TraceId.ToString();
+        if (string.IsNullOrEmpty(traceId))
+        {
+            var incomingTraceId = context.Request.Headers[TraceIdHeaderName].ToString();
+            traceId = IsTraceId(incomingTraceId) ? incomingTraceId : ActivityTraceId.CreateRandom().ToString();
+        }
 
         context.TraceIdentifier = correlationId;
         context.Items[HeaderName] = correlationId;
+        context.Items[TraceIdItemName] = traceId;
         context.Response.OnStarting(() =>
         {
             context.Response.Headers[HeaderName] = correlationId;
+            context.Response.Headers[TraceIdHeaderName] = traceId;
             return Task.CompletedTask;
         });
 
-        using (_logger.BeginScope(new Dictionary<string, object> { ["CorrelationId"] = correlationId }))
-            await _next(context);
+        using (_logger.BeginScope(new Dictionary<string, object>
+               {
+                   ["CorrelationId"] = correlationId,
+                   ["TraceId"] = traceId,
+               }))
+        {
+            var stopwatch = Stopwatch.StartNew();
+            _logger.LogInformation("HTTP request started {Method} {Path}", context.Request.Method,
+                context.Request.Path);
+            try
+            {
+                await _next(context);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "HTTP request failed {Method} {Path}", context.Request.Method,
+                    context.Request.Path);
+                throw;
+            }
+            finally
+            {
+                var statusCode = context.Response.StatusCode;
+                var level = statusCode >= StatusCodes.Status500InternalServerError
+                    ? LogLevel.Error
+                    : statusCode >= StatusCodes.Status400BadRequest ? LogLevel.Warning : LogLevel.Information;
+                _logger.Log(level, "HTTP request completed {Method} {Path} with {StatusCode} in {DurationMs}ms",
+                    context.Request.Method, context.Request.Path, statusCode, stopwatch.Elapsed.TotalMilliseconds);
+            }
+        }
     }
 
     // Prevent log injection through the header.
     private static bool IsSafe(string value) =>
         value.Length is > 0 and <= 64 && value.All(c => char.IsLetterOrDigit(c) || c is '-' or '_');
+
+    private static bool IsTraceId(string value) =>
+        value.Length == 32 && value.All(Uri.IsHexDigit) && value.Any(c => c != '0');
 }
 
 /// <summary>Propagates the caller's correlation id on outgoing service-to-service calls.</summary>
@@ -56,6 +97,11 @@ public sealed class CorrelationIdDelegatingHandler : DelegatingHandler
         if (_accessor.HttpContext?.Items[CorrelationIdMiddleware.HeaderName] is string id &&
             !request.Headers.Contains(CorrelationIdMiddleware.HeaderName))
             request.Headers.Add(CorrelationIdMiddleware.HeaderName, id);
+
+        var traceId = Activity.Current?.TraceId.ToString() ??
+                      _accessor.HttpContext?.Items[CorrelationIdMiddleware.TraceIdItemName] as string;
+        if (!string.IsNullOrEmpty(traceId) && !request.Headers.Contains(CorrelationIdMiddleware.TraceIdHeaderName))
+            request.Headers.Add(CorrelationIdMiddleware.TraceIdHeaderName, traceId);
         return base.SendAsync(request, ct);
     }
 }

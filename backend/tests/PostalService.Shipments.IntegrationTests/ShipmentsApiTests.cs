@@ -48,6 +48,22 @@ public sealed class ShipmentsApiTests : IClassFixture<ShipmentsApiFactory>
     }
 
     [Fact]
+    public async Task Correlation_and_trace_context_are_echoed_in_response_headers()
+    {
+        const string correlationId = "frontend-request-123";
+        const string traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/api/shipments");
+        request.Headers.Add("X-Correlation-ID", correlationId);
+        request.Headers.Add("traceparent", $"00-{traceId}-00f067aa0ba902b7-01");
+
+        var response = await _factory.Operator().SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        response.Headers.GetValues("X-Correlation-ID").Should().ContainSingle().Which.Should().Be(correlationId);
+        response.Headers.GetValues("X-Trace-ID").Should().ContainSingle().Which.Should().Be(traceId);
+    }
+
+    [Fact]
     public async Task Invalid_input_returns_400_problem_details()
     {
         var response = await _factory.Operator().PostAsJsonAsync("/api/shipments",

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Threading.RateLimiting;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.OpenApi.Models;
@@ -53,7 +54,7 @@ builder.Services.AddCors(o => o.AddDefaultPolicy(p => p
     .AllowAnyHeader()
     .AllowAnyMethod()
     .AllowCredentials()
-    .WithExposedHeaders("X-Correlation-ID")));
+    .WithExposedHeaders("X-Correlation-ID", "X-Trace-ID")));
 
 var otlp = builder.Configuration["OTEL_EXPORTER_OTLP_ENDPOINT"];
 builder.Services.AddOpenTelemetry()
@@ -76,17 +77,50 @@ if (app.Environment.IsDevelopment())
 
 app.Use(async (ctx, next) =>
 {
-    // Start the correlation chain here; services echo and log it.
-    const string header = "X-Correlation-ID";
-    if (!ctx.Request.Headers.ContainsKey(header))
-        ctx.Request.Headers[header] = Guid.NewGuid().ToString("N");
-    var id = ctx.Request.Headers[header].ToString();
+    const string correlationHeader = "X-Correlation-ID";
+    const string traceHeader = "X-Trace-ID";
+    var incoming = ctx.Request.Headers[correlationHeader].ToString();
+    var correlationId = incoming.Length is > 0 and <= 64 &&
+                        incoming.All(c => char.IsLetterOrDigit(c) || c is '-' or '_')
+        ? incoming
+        : Guid.NewGuid().ToString("N");
+    ctx.Request.Headers[correlationHeader] = correlationId;
+    ctx.TraceIdentifier = correlationId;
+    var traceId = Activity.Current?.TraceId.ToString() ?? ActivityTraceId.CreateRandom().ToString();
+
     ctx.Response.OnStarting(() =>
     {
-        ctx.Response.Headers[header] = id;
+        ctx.Response.Headers[correlationHeader] = correlationId;
+        ctx.Response.Headers[traceHeader] = traceId;
         return Task.CompletedTask;
     });
-    await next();
+    using (app.Logger.BeginScope(new Dictionary<string, object>
+           {
+               ["CorrelationId"] = correlationId,
+               ["TraceId"] = traceId,
+           }))
+    {
+        var stopwatch = Stopwatch.StartNew();
+        app.Logger.LogInformation("Gateway request started {Method} {Path}", ctx.Request.Method, ctx.Request.Path);
+        try
+        {
+            await next();
+        }
+        catch (Exception ex)
+        {
+            app.Logger.LogError(ex, "Gateway request failed {Method} {Path}", ctx.Request.Method, ctx.Request.Path);
+            throw;
+        }
+        finally
+        {
+            var statusCode = ctx.Response.StatusCode;
+            var level = statusCode >= StatusCodes.Status500InternalServerError
+                ? LogLevel.Error
+                : statusCode >= StatusCodes.Status400BadRequest ? LogLevel.Warning : LogLevel.Information;
+            app.Logger.Log(level, "Gateway request completed {Method} {Path} with {StatusCode} in {DurationMs}ms",
+                ctx.Request.Method, ctx.Request.Path, statusCode, stopwatch.Elapsed.TotalMilliseconds);
+        }
+    }
 });
 
 app.UseCors();

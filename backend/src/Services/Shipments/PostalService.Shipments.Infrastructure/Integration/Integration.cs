@@ -12,6 +12,7 @@ using PostalService.BuildingBlocks.Infrastructure.Messaging;
 using PostalService.BuildingBlocks.Infrastructure.Persistence;
 using PostalService.BuildingBlocks.Infrastructure.Web;
 using PostalService.Shipments.Application;
+using System.Diagnostics;
 using PostalService.Shipments.Domain;
 using PostalService.Shipments.Infrastructure.Persistence;
 
@@ -35,17 +36,31 @@ public sealed class HttpPostOfficeDirectory : IPostOfficeDirectory
 
     public async Task<PostOfficeInfo?> FindAsync(ZipCode zip, CancellationToken ct)
     {
+        var stopwatch = Stopwatch.StartNew();
+        _logger.LogInformation("Dependency request started {Dependency} {Operation}", "PostOffices", "FindPostOffice");
         try
         {
             using var response = await _http.GetAsync($"internal/postoffices/{Uri.EscapeDataString(zip.Value)}", ct);
-            if (response.StatusCode == HttpStatusCode.NotFound) return null;
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                _logger.LogInformation(
+                    "Dependency request completed {Dependency} {Operation} with {StatusCode} in {DurationMs}ms",
+                    "PostOffices", "FindPostOffice", (int)response.StatusCode, stopwatch.Elapsed.TotalMilliseconds);
+                return null;
+            }
             response.EnsureSuccessStatusCode();
-            return await response.Content.ReadFromJsonAsync<PostOfficeInfo>(cancellationToken: ct);
+            var result = await response.Content.ReadFromJsonAsync<PostOfficeInfo>(cancellationToken: ct);
+            _logger.LogInformation(
+                "Dependency request completed {Dependency} {Operation} with {StatusCode} in {DurationMs}ms",
+                "PostOffices", "FindPostOffice", (int)response.StatusCode, stopwatch.Elapsed.TotalMilliseconds);
+            return result;
         }
         catch (Exception ex) when (ex is HttpRequestException or BrokenCircuitException or TimeoutRejectedException
                                        or TaskCanceledException && !ct.IsCancellationRequested)
         {
-            _logger.LogWarning(ex, "PostOffices service unavailable while validating {Zip}", zip.Value);
+            _logger.LogWarning(ex,
+                "Dependency request failed {Dependency} {Operation} in {DurationMs}ms",
+                "PostOffices", "FindPostOffice", stopwatch.Elapsed.TotalMilliseconds);
             throw new ServiceUnavailableException(
                 "Post office data cannot be verified right now, so the shipment was not saved. Please retry shortly.", ex);
         }

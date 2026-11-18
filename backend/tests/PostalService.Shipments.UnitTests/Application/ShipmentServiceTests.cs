@@ -1,4 +1,5 @@
 using FluentValidation;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using PostalService.BuildingBlocks.Application;
 using PostalService.BuildingBlocks.Domain;
@@ -34,7 +35,8 @@ public class ShipmentServiceTests
 
     private ShipmentService Sut() => new(_repo.Object, _queries.Object, _directory.Object, _idempotency.Object, _uow.Object,
         _user.Object, _clock, new CreateShipmentRequestValidator(), new UpdateShipmentRequestValidator(),
-        new ChangeStatusRequestValidator(), new CorrectStatusRequestValidator(), new ShipmentSearchCriteriaValidator());
+        new ChangeStatusRequestValidator(), new CorrectStatusRequestValidator(), new ShipmentSearchCriteriaValidator(),
+        NullLogger<ShipmentService>.Instance);
 
     private void GivenOffice(string zip, bool active) =>
         _directory.Setup(d => d.FindAsync(ZipCode.Create(zip), It.IsAny<CancellationToken>()))

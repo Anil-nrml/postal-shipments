@@ -13,6 +13,8 @@ import { emitSessionExpired } from './events';
 export const API_BASE = '/api';
 const CSRF_COOKIE = 'csrf_token';
 const CSRF_HEADER = 'X-CSRF-Token';
+const CORRELATION_HEADER = 'X-Correlation-ID';
+const TRACE_ID_HEADER = 'X-Trace-ID';
 
 export class ApiError extends Error {
   constructor(
@@ -21,6 +23,7 @@ export class ApiError extends Error {
     public readonly code?: string,
     public readonly fieldErrors: Record<string, string[]> = {},
     public readonly correlationId?: string,
+    public readonly traceId?: string,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -41,7 +44,35 @@ interface ProblemDetails {
   status?: number;
   code?: string;
   correlationId?: string;
+  traceId?: string;
   errors?: Record<string, string[]>;
+}
+
+interface RequestContext {
+  correlationId: string;
+  traceId: string;
+  traceparent: string;
+}
+
+function randomHex(byteLength: number): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(byteLength));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function createRequestContext(): RequestContext {
+  const traceId = randomHex(16);
+  return {
+    correlationId: randomHex(16),
+    traceId,
+    traceparent: `00-${traceId}-${randomHex(8)}-01`,
+  };
+}
+
+function retryRequestContext(context: RequestContext): RequestContext {
+  return {
+    ...context,
+    traceparent: `00-${context.traceId}-${randomHex(8)}-01`,
+  };
 }
 
 export function readCookie(name: string): string | undefined {
@@ -63,19 +94,15 @@ export interface RequestOptions {
 
 let refreshInFlight: Promise<boolean> | null = null;
 
-async function refreshSession(): Promise<boolean> {
-  refreshInFlight ??= send('/auth/refresh', { method: 'POST', skipRefresh: true })
-    .then((r) => r.ok)
-    .catch(() => false)
-    .finally(() => {
-      refreshInFlight = null;
-    });
-  return refreshInFlight;
-}
-
-async function send(path: string, options: RequestOptions): Promise<Response> {
+async function send(path: string, options: RequestOptions, context: RequestContext): Promise<Response> {
   const method = options.method ?? 'GET';
-  const headers: Record<string, string> = { Accept: 'application/json', ...options.headers };
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    ...options.headers,
+    [CORRELATION_HEADER]: context.correlationId,
+    [TRACE_ID_HEADER]: context.traceId,
+    traceparent: context.traceparent,
+  };
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (method !== 'GET') {
     const csrf = readCookie(CSRF_COOKIE);
@@ -90,7 +117,7 @@ async function send(path: string, options: RequestOptions): Promise<Response> {
   });
 }
 
-async function toApiError(response: Response): Promise<ApiError> {
+async function toApiError(response: Response, context: RequestContext): Promise<ApiError> {
   let problem: ProblemDetails = {};
   try {
     problem = (await response.json()) as ProblemDetails;
@@ -101,27 +128,144 @@ async function toApiError(response: Response): Promise<ApiError> {
     problem.detail ??
     problem.title ??
     (response.status === 0 ? 'Network error' : `Request failed (${response.status})`);
-  return new ApiError(response.status, message, problem.code, problem.errors ?? {}, problem.correlationId);
+  return new ApiError(
+    response.status,
+    message,
+    problem.code,
+    problem.errors ?? {},
+    problem.correlationId ?? response.headers.get(CORRELATION_HEADER) ?? context.correlationId,
+    problem.traceId ?? response.headers.get(TRACE_ID_HEADER) ?? context.traceId,
+  );
 }
 
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+function logRequest(
+  path: string,
+  method: string,
+  context: RequestContext,
+  status: number | undefined,
+  durationMs: number,
+): void {
+  const fields = {
+    method,
+    path: path.split('?')[0],
+    status,
+    durationMs,
+    correlationId: context.correlationId,
+    traceId: context.traceId,
+  };
+  if (status === undefined || status >= 400) {
+    console.error('API request failed', { event: 'api.request.failed', ...fields });
+    return;
+  }
+  console.info('API request completed', { event: 'api.request.completed', ...fields });
+}
+
+async function refreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    const context = createRequestContext();
+    const startedAt = performance.now();
+    console.info('API request started', {
+      event: 'api.request.started',
+      method: 'POST',
+      path: '/auth/refresh',
+      correlationId: context.correlationId,
+      traceId: context.traceId,
+    });
+    refreshInFlight = send('/auth/refresh', { method: 'POST', skipRefresh: true }, context)
+      .then((response) => {
+        logRequest('/auth/refresh', 'POST', context, response.status, Math.round(performance.now() - startedAt));
+        return response.ok;
+      })
+      .catch(() => {
+        logRequest('/auth/refresh', 'POST', context, undefined, Math.round(performance.now() - startedAt));
+        return false;
+      })
+      .finally(() => {
+        refreshInFlight = null;
+      });
+  }
+  return refreshInFlight;
+}
+
+async function executeRequest<T>(path: string, options: RequestOptions, context: RequestContext): Promise<T> {
   let response: Response;
+  const method = options.method ?? 'GET';
+  const startedAt = performance.now();
+  console.info('API request started', {
+    event: 'api.request.started',
+    method,
+    path: path.split('?')[0],
+    correlationId: context.correlationId,
+    traceId: context.traceId,
+  });
   try {
-    response = await send(path, options);
+    response = await send(path, options, context);
   } catch (e) {
-    if ((e as Error).name === 'AbortError') throw e;
-    throw new ApiError(0, 'Cannot reach the server. Check your connection and try again.');
+    if ((e as Error).name === 'AbortError') {
+      console.info('API request cancelled', {
+        event: 'api.request.cancelled',
+        method,
+        path: path.split('?')[0],
+        durationMs: Math.round(performance.now() - startedAt),
+        correlationId: context.correlationId,
+        traceId: context.traceId,
+      });
+      throw e;
+    }
+    logRequest(path, method, context, undefined, Math.round(performance.now() - startedAt));
+    throw new ApiError(
+      0,
+      'Cannot reach the server. Check your connection and try again.',
+      undefined,
+      {},
+      context.correlationId,
+      context.traceId,
+    );
   }
 
   if (response.status === 401 && !options.skipRefresh && !path.startsWith('/auth/')) {
-    if (await refreshSession()) return apiRequest<T>(path, { ...options, skipRefresh: true });
+    if (await refreshSession()) {
+      console.warn('API request retrying after session refresh', {
+        event: 'api.request.retrying',
+        method,
+        path: path.split('?')[0],
+        status: response.status,
+        durationMs: Math.round(performance.now() - startedAt),
+        correlationId: context.correlationId,
+        traceId: context.traceId,
+      });
+      return executeRequest<T>(path, { ...options, skipRefresh: true }, retryRequestContext(context));
+    }
     emitSessionExpired();
   }
 
-  if (!response.ok) throw await toApiError(response);
-  if (response.status === 204) return undefined as T;
-  const text = await response.text();
-  return (text ? JSON.parse(text) : undefined) as T;
+  if (!response.ok) {
+    const error = await toApiError(response, context);
+    logRequest(path, method, context, response.status, Math.round(performance.now() - startedAt));
+    throw error;
+  }
+  try {
+    const result = response.status === 204
+      ? undefined
+      : await response.text().then((text) => (text ? JSON.parse(text) : undefined));
+    logRequest(path, method, context, response.status, Math.round(performance.now() - startedAt));
+    return result as T;
+  } catch (e) {
+    console.error('API response parsing failed', {
+      event: 'api.response.parse_failed',
+      method,
+      path: path.split('?')[0],
+      status: response.status,
+      durationMs: Math.round(performance.now() - startedAt),
+      correlationId: context.correlationId,
+      traceId: context.traceId,
+    });
+    throw e;
+  }
+}
+
+export function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  return executeRequest(path, options, createRequestContext());
 }
 
 export const api = {

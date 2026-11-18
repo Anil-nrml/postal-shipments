@@ -1,4 +1,5 @@
 using FluentValidation;
+using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using PostalService.BuildingBlocks.Application;
 using PostalService.BuildingBlocks.Domain;
@@ -75,7 +76,8 @@ public class PostOfficeServiceTests
     private readonly TestClock _clock = new();
 
     private PostOfficeService Sut() => new(_repo.Object, _deps.Object, _uow.Object, _clock,
-        new CreatePostOfficeRequestValidator(), new UpdatePostOfficeRequestValidator(), new PostOfficeSearchCriteriaValidator());
+        new CreatePostOfficeRequestValidator(), new UpdatePostOfficeRequestValidator(), new PostOfficeSearchCriteriaValidator(),
+        NullLogger<PostOfficeService>.Instance);
 
     private PostOffice Existing()
     {
